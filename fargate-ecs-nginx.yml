@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Fargate CloudFormation template  for a sample web application.
+Parameters:
+  VPC:
+    Type: 'AWS::EC2::VPC::Id'
+  SubnetA:
+    Type: 'AWS::EC2::Subnet::Id'
+  SubnetB:
+    Type: 'AWS::EC2::Subnet::Id'
+  Version:
+    Type: String
+    Default: 'latest'
+  HealthCheckPath:
+    Type: String
+    Default: /
+  MinContainers:
+    Type: Number
+    Default: 2
+  MaxContainers:
+    Type: Number
+    Default: 10
+  AutoScalingTargetValue:
+    Type: Number
+    Default: 50
+Resources:
+  Cluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - 'Cluster'
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    DependsOn: LogGroup
+    Properties:
+      Family: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - 'TaskDefinition'
+          - 'nginx'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 0.5GB
+      ExecutionRoleArn: !Ref ExecutionRole
+      TaskRoleArn: !Ref TaskRole
+      ContainerDefinitions:
+        - Name: !Join
+            - '-'
+            - - !Ref AWS::StackName
+              - 'nginx'
+          Image: !Join [':',['548008083286.dkr.ecr.ap-south-1.amazonaws.com/nginx',!Ref Version]]
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+  ExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - ExecutionRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+  TaskRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - TaskRole
+          - nginx
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+  AutoScalingRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - AutoScalingRole
+          - nginx
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - >-
+          arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole
+  ContainerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - SecurityGroup
+          - nginx
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+  LoadBalancerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - SecurityGroup
+          - nginx
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  nginx:
+    Type: 'AWS::ECS::Service'
+    DependsOn:
+      - ListenerHTTP
+    Properties:
+      ServiceName: !Join
+        - '-'
+        - - !Ref AWS::StackName
+          - nginx
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: 2
+      HealthCheckGracePeriodSeconds: 30
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref SubnetA
+            - !Ref SubnetB
+          SecurityGroups:
+            - !Ref ContainerSecurityGroup
+      LoadBalancers:
+        - ContainerName: !Join
+            - '-'
+            - - !Ref AWS::StackName
+              - nginx
+          ContainerPort: 80
+          TargetGroupArn: !Ref TargetGroup
+  TargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckTimeoutSeconds: 5
+      UnhealthyThresholdCount: 2
+      HealthyThresholdCount: 2
+      Name: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - TargetGroup
+          - nginx
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 60
+      TargetType: ip
+      VpcId: !Ref VPC
+  ListenerHTTP:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+  LoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: 60
+      Name: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - LoadBalancer
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref SubnetA
+        - !Ref SubnetB
+  LogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Join 
+        - '/'
+        - - /ecs
+          - !Ref AWS::StackName
+          - TaskDefinition
+  AutoScalingTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    Properties:
+      MinCapacity: !Ref MinContainers
+      MaxCapacity: !Ref MaxContainers
+      ResourceId: !Join 
+        - /
+        - - service
+          - !Ref Cluster
+          - !GetAtt nginx.Name
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
+      RoleARN: !GetAtt AutoScalingRole.Arn
+  AutoScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+    Properties:
+      PolicyName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - AutoScalingPolicy
+          - nginx
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 10
+        ScaleOutCooldown: 10
+        TargetValue: !Ref AutoScalingTargetValue
+Outputs:
+  LoadBalancer:
+    Description: Endpoint
+    Value: !Join 
+      - ''
+      - - 'http://'
+        - !GetAtt LoadBalancer.DNSName
